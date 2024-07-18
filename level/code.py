@@ -10,6 +10,8 @@ from terminalio import FONT
 from adafruit_display_shapes.circle import Circle
 from adafruit_display_text import label
 from collections import deque
+import digitalio
+from adafruit_debouncer import Debouncer
 
 # Constants
 WIDTH = 128
@@ -68,44 +70,57 @@ def calculate_moving_average(new_value, values_deque):
     values_deque.append(new_value)
     return sum(values_deque) / len(values_deque)
 
-def print_status(mpu, avg_acc_x, avg_acc_y, circle2, loop_durations):
-    print("Acceleration: X:%.2f, Y: %.2f, Z: %.2f m/s^2" % mpu.acceleration)
-    print("Average Acceleration X: %.2f" % avg_acc_x)
-    print("Average Acceleration Y: %.2f" % avg_acc_y)
+def print_status(mpu, circle2, loop_duration):
+    print(f"Acceleration: X:{mpu.acceleration[0]:.2f}, Y: {mpu.acceleration[1]:.2f}, Z: {mpu.acceleration[2]:.2f} m/s^2")
     if enable_vertical_movement:
-        print("Circle2 Y:", circle2.y)
-    avg_loop_duration = sum(loop_durations) / len(loop_durations)
-    print("Average loop duration: %.4f seconds" % avg_loop_duration)
+        print(f"Circle2 Y: {circle2.y}")
+    print(f"Average loop duration: {loop_duration:.4f} seconds")
 
 last_print_time = time.monotonic()
 
+# Initialize button
+button_pin = digitalio.DigitalInOut(board.D1)
+button_pin.direction = digitalio.Direction.INPUT
+button_pin.pull = digitalio.Pull.UP
+button = Debouncer(button_pin)
+
+# Initial positions
+current_x = WIDTH // 2 - CIRCLE_RADIUS
+current_y = HEIGHT // 2 - CIRCLE_RADIUS
+
 while True:
     start_time = time.monotonic()  # Start time measurement
-    
-    # Calculate the moving average of the last 10 acceleration values
-    avg_acc_x = calculate_moving_average(mpu.acceleration[0], acc_x_values)
-    avg_acc_y = calculate_moving_average(mpu.acceleration[1], acc_y_values)
+
+    # Update button state
+    button.update()
+    if button.fell:  # Button pressed
+        enable_vertical_movement = not enable_vertical_movement
+
+    # Get current acceleration values
+    acc_x, acc_y, _ = mpu.acceleration
+
+    # Calculate moving averages
+    avg_acc_x = calculate_moving_average(acc_x, acc_x_values)
+    avg_acc_y = calculate_moving_average(acc_y, acc_y_values)
+
+    # Calculate target positions
+    current_x = WIDTH // 2 - CIRCLE_RADIUS + math.floor(avg_acc_y * 20)
+    current_y = HEIGHT // 2 - CIRCLE_RADIUS + math.floor(avg_acc_x * 20) if enable_vertical_movement else HEIGHT // 2 - CIRCLE_RADIUS
 
     # Update circle position
-    circle2.x = WIDTH // 2 - CIRCLE_RADIUS + math.floor(avg_acc_y * 20)
-    if enable_vertical_movement:
-        circle2.y = HEIGHT // 2 - CIRCLE_RADIUS + math.floor(avg_acc_x * 20)
+    circle2.x = int(current_x)
+    circle2.y = int(current_y)
 
     # Show or hide the "Level!" label based on avg_acc_x and avg_acc_y
-    if enable_vertical_movement:
-        level_label.hidden = not (0.00 <= abs(avg_acc_x) <= 0.05 and 0.00 <= abs(avg_acc_y) <= 0.05)
-    else:
-        level_label.hidden = not (0.00 <= abs(avg_acc_y) <= 0.05)
+    level_label.hidden = not (0.00 <= abs(avg_acc_x) <= 0.05 and 0.00 <= abs(avg_acc_y) <= 0.05) if enable_vertical_movement else not (0.00 <= abs(avg_acc_y) <= 0.05)
 
-    end_time = time.monotonic()  # End time measurement
-    loop_duration = end_time - start_time
-    calculate_moving_average(loop_duration, loop_durations)
+    # Calculate loop duration
+    loop_duration = time.monotonic() - start_time
 
-    current_time = end_time
-    if current_time - last_print_time >= 1:
-        # Print status every second
-        print_status(mpu, avg_acc_x, avg_acc_y, circle2, loop_durations)
-        last_print_time = current_time
+    # Print status every second
+    if time.monotonic() - last_print_time >= 1:
+        print_status(mpu, circle2, loop_duration)
+        last_print_time = time.monotonic()
 
     oled.refresh()
     time.sleep(1 / 60)
